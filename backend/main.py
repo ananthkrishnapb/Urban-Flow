@@ -32,22 +32,14 @@ app = FastAPI(
     description="Backend telemetry and predictive modeling suite for urban infrastructure degradation."
 )
 
+# Configure CORS for local development and production deployments (e.g., Vercel, Netlify, Render)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # Replace with your frontend production URL later if needed
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# Initialize NN model on startup
-@app.on_event("startup")
-def startup_event():
-    df = get_cached_dataset()
-    try:
-        train_infrastructure_nn(df, epochs=25)
-    except Exception as e:
-        print(f"Warning initializing PyTorch NN: {e}")
 
 @app.get("/")
 def read_root():
@@ -62,7 +54,9 @@ def read_root():
 
 @app.post("/api/v1/telemetry/simulate")
 def simulate_telemetry(payload: SimulationRequest):
-    df = generate_telemetry_dataset(n=payload.samples)
+    # Cap samples to prevent 512MB RAM overflow on Render free tier
+    n = min(max(payload.samples, 50), 2000)
+    df = generate_telemetry_dataset(n=n)
     set_cached_dataset(df)
     
     avg_vibration = float(df['vibration_amplitude'].mean())
@@ -70,7 +64,7 @@ def simulate_telemetry(payload: SimulationRequest):
     critical_count = int((df['failure_risk_level'] == 2).sum())
     
     return {
-        "message": f"Successfully simulated {payload.samples} telemetry records.",
+        "message": f"Successfully simulated {n} telemetry records.",
         "summary": {
             "total_records": len(df),
             "avg_vibration_rms": round(avg_vibration, 3),

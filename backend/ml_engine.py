@@ -55,16 +55,28 @@ def generate_telemetry_dataset(n: int = 1200, random_state: int = 42) -> pd.Data
     })
     return df
 
-# Global cached dataset for fast repeated queries
-_GLOBAL_DATASET = generate_telemetry_dataset(1500)
+import gc
+
+# Restrict PyTorch thread pool to prevent thread stack memory blowup on 512MB RAM containers
+try:
+    torch.set_num_threads(1)
+    torch.set_num_interop_threads(1)
+except Exception:
+    pass
+
+# Lazy dataset cache: loaded on-demand, not at module import time
+_GLOBAL_DATASET = None
 
 def get_cached_dataset() -> pd.DataFrame:
     global _GLOBAL_DATASET
+    if _GLOBAL_DATASET is None:
+        _GLOBAL_DATASET = generate_telemetry_dataset(300)
     return _GLOBAL_DATASET
 
 def set_cached_dataset(df: pd.DataFrame):
     global _GLOBAL_DATASET
     _GLOBAL_DATASET = df
+    gc.collect()
 
 
 # ==========================================
@@ -233,12 +245,14 @@ class InfrastructureNN(nn.Module):
 _TRAINED_NN_MODEL = None
 _NN_SCALER = None
 
-def train_infrastructure_nn(df: pd.DataFrame, epochs: int = 40):
+def train_infrastructure_nn(df: pd.DataFrame, epochs: int = 25):
     global _TRAINED_NN_MODEL, _NN_SCALER
     
+    # Cap training sample size to 300 records to keep RAM within Render's 512MB limit
+    df_sample = df.head(300)
     features = ['asset_age_years', 'material_quality_index', 'traffic_load_index', 'soil_moisture', 'vibration_amplitude']
-    X = df[features].values
-    y = df['failure_risk_level'].values
+    X = df_sample[features].values.astype(np.float32)
+    y = df_sample['failure_risk_level'].values.astype(np.int64)
     
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.25, random_state=42, stratify=y)
     
@@ -282,7 +296,7 @@ def train_infrastructure_nn(df: pd.DataFrame, epochs: int = 40):
     cr = classification_report(y_test, test_preds, target_names=["Low", "Medium", "Critical"], output_dict=True)
     
     # Baseline comparison: Logistic Regression
-    lr_clf = LogisticRegression(max_iter=1000)
+    lr_clf = LogisticRegression(max_iter=500)
     lr_clf.fit(X_train_scaled, y_train)
     lr_preds = lr_clf.predict(X_test_scaled)
     lr_acc = float(np.mean(lr_preds == y_test))
@@ -292,6 +306,10 @@ def train_infrastructure_nn(df: pd.DataFrame, epochs: int = 40):
         auc_score = float(roc_auc_score(y_test, test_probs, multi_class='ovr'))
     except Exception:
         auc_score = 0.94
+        
+    # Free temporary training tensors
+    del X_train_t, y_train_t, X_test_t, y_test_t
+    gc.collect()
         
     return {
         "status": "TRAINED",
@@ -318,9 +336,9 @@ def predict_single_risk(
     global _TRAINED_NN_MODEL, _NN_SCALER
     
     if _TRAINED_NN_MODEL is None:
-        train_infrastructure_nn(get_cached_dataset())
+        train_infrastructure_nn(get_cached_dataset().head(200), epochs=15)
         
-    raw_features = np.array([[asset_age, material_quality, traffic_load, soil_moisture, vibration_amp]])
+    raw_features = np.array([[asset_age, material_quality, traffic_load, soil_moisture, vibration_amp]], dtype=np.float32)
     scaled = _NN_SCALER.transform(raw_features)
     
     tensor_input = torch.tensor(scaled, dtype=torch.float32)

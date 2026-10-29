@@ -1,10 +1,21 @@
 // API service layer connecting to the FastAPI UrbanFlow telemetry engine
 
-const API_BASE = '/api/v1';
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000';
+
+export async function fetchTelemetrySimulation(samples = 1000) {
+  const response = await fetch(`${API_BASE_URL}/api/v1/telemetry/simulate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ samples })
+  });
+  if (!response.ok) throw new Error('Failed to fetch simulation data');
+  return response.json();
+}
 
 async function fetchJson(endpoint, options = {}) {
   try {
-    const res = await fetch(`${API_BASE}${endpoint}`, {
+    const url = `${API_BASE_URL}/api/v1${endpoint}`;
+    const res = await fetch(url, {
       headers: {
         'Content-Type': 'application/json',
         ...(options.headers || {}),
@@ -25,7 +36,7 @@ export const api = {
   // 1. Health check
   checkRoot: async () => {
     try {
-      const res = await fetch('/');
+      const res = await fetch(`${API_BASE_URL}/`);
       return await res.json();
     } catch {
       return { status: "ONLINE", engine: "UrbanFlow Local Engine", nodes_active: 24180 };
@@ -34,10 +45,7 @@ export const api = {
 
   // 2. Simulate Telemetry records
   simulateTelemetry: async (samples = 1000) => {
-    return fetchJson('/telemetry/simulate', {
-      method: 'POST',
-      body: JSON.stringify({ samples })
-    });
+    return fetchTelemetrySimulation(samples);
   },
 
   // 3. Paginated Telemetry Feed
